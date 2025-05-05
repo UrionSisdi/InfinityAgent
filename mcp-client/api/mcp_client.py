@@ -17,7 +17,10 @@ class MCPClient:
         # Initialize session and client objects
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
-        self.llm = OpenAI(base_url="https://openrouter.ai/api/v1", api_key="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")
+        self.llm = OpenAI(
+            base_url="https://openrouter.ai/api/v1", 
+            api_key="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",
+        )
         self.tools = []
         self.messages = []
         self.logger = logger
@@ -87,29 +90,38 @@ class MCPClient:
             while True:
                 response = await self.call_llm()
 
-                # the response is a text message
-                if response.content[0].type == "text" and len(response.content) == 1:
+                # Если есть текстовое содержимое
+                if response.content and not response.tool_calls:
                     assistant_message = {
                         "role": "assistant",
-                        "content": response.content[0].text,
+                        "content": response.content,
                     }
                     self.messages.append(assistant_message)
                     await self.log_conversation()
                     break
 
-                # the response is a tool call
-                assistant_message = {
-                    "role": "assistant",
-                    "content": response.to_dict()["content"],
-                }
-                self.messages.append(assistant_message)
-                await self.log_conversation()
+                # Если есть вызовы инструментов
+                if response.tool_calls:
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": [],
+                    }
+                    
+                    # Если есть текстовое содержимое, добавляем его
+                    if response.content:
+                        assistant_message["content"] = response.content
+                    
+                    # Добавляем tool calls в сообщение
+                    if hasattr(response, "to_dict"):
+                        assistant_message["content"] = response.to_dict().get("content", [])
+                    
+                    self.messages.append(assistant_message)
+                    await self.log_conversation()
 
-                for content in response.content:
-                    if content.type == "tool_use":
-                        tool_name = content.name
-                        tool_args = content.input
-                        tool_use_id = content.id
+                    for tool_call in response.tool_calls:
+                        tool_name = tool_call.function.name
+                        tool_args = json.loads(tool_call.function.arguments)
+                        tool_use_id = tool_call.id
                         self.logger.info(
                             f"Calling tool {tool_name} with args {tool_args}"
                         )
@@ -132,6 +144,10 @@ class MCPClient:
                         except Exception as e:
                             self.logger.error(f"Error calling tool {tool_name}: {e}")
                             raise
+                    continue
+                
+                # Если нет ни текста, ни tool_calls, завершаем цикл
+                break
 
             return self.messages
 
@@ -143,12 +159,14 @@ class MCPClient:
     async def call_llm(self):
         try:
             self.logger.info("Calling LLM")
-            return self.llm.chat.completions.create(
-                model="openai/gpt-4.1-nano",
+            response = self.llm.chat.completions.create(
+                model="google/gemini-2.5-flash-preview:thinking",
                 max_tokens=1000,
                 messages=self.messages,
                 tools=self.tools,
             )
+            self.logger.info(f"LLM response: {response}")
+            return response.choices[0].message
         except Exception as e:
             self.logger.error(f"Error calling LLM: {e}")
             raise
